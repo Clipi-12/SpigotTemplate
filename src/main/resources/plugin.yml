@@ -1,0 +1,9 @@
+name: ${bukkitProjectName}
+version: "${version}"
+main: ${mainPackage}.Main
+api-version: "${apiVersion}"
+authors: [ DevName ]
+
+commands:
+  ${doWork_Name}:
+    aliases: ${doWork_Aliases}
