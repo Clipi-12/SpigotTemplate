@@ -37,10 +37,22 @@ dependencies {
 }
 
 
-val props: Map<String, Serializable?> = mapOf(
+val info: Map<String, Serializable?> = mapOf(
     "doWork_Name" to "do_work",
     "doWork_Aliases" to arrayOf("do_some_work", "do_tasks"),
 )
+// Providing config keys at compile-time ensures no typo-related error can happen
+val configKeys: Map<String, Serializable?> = arrayOf(
+    "working hours",
+    "is working hard enough",
+).associate { it ->
+    val camelCase = it.split(" ")
+        .joinToString("") { it.replaceFirstChar(Char::titlecaseChar) }
+        .replaceFirstChar(Char::lowercaseChar)
+    val snakeCase = it.split(" ").joinToString("_")
+    "${camelCase}_Key" to snakeCase
+}
+val props = info + configKeys
 
 val targetJavaVersion = 17
 java {
@@ -100,7 +112,7 @@ spigotVersions.forEachIndexed { index, (spigotVersion, apiVersion) ->
 
         generateBuildConfig = buildConfig.sourceSets.create(spigotVersion) {
             packageName("${mainPackage}.config")
-            className("ConfigValues")
+            className("ConfigKeys")
             useJavaOutput()
 
             props.forEach { (key, value) ->
@@ -110,7 +122,9 @@ spigotVersions.forEachIndexed { index, (spigotVersion, apiVersion) ->
                 }
             }
 
-            buildConfigField("apiVersion", apiVersion)
+            forClass("CompilationInfo") {
+                buildConfigField("apiVersion", apiVersion)
+            }
         }.generateTask.get().also {
             it.group = "z_$spigotVersion"
             if (index == 0) {
