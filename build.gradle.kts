@@ -16,11 +16,15 @@ version = "0.0.1"
 val mainPackage = "${group}.${name.split(Regex("\\s+")).joinToString("_").lowercase()}"
 
 val versionSpecificSources = sortedMapOf(
-    "1.18.2-R0.1-SNAPSHOT" to "pre_1_19",
-    "1.19.3-R0.1-SNAPSHOT" to "1_19",
-    "1.19.4-R0.1-SNAPSHOT" to "1_19",
-    "1.20.1-R0.1-SNAPSHOT" to "post_1_19"
-).mapValues { (_, sourceDir) -> sourceSets.maybeCreate(sourceDir) }.toSortedMap()
+    *arrayOf(
+        "1.18.2-R0.1-SNAPSHOT" to "pre_1_19",
+        "1.19.3-R0.1-SNAPSHOT" to "1_19",
+        "1.19.4-R0.1-SNAPSHOT" to "1_19",
+        "1.21.1-R0.1-SNAPSHOT" to "post_1_19"
+    )
+        .map { (spigotVersion, sourceDir) -> spigotVersion to sourceSets.maybeCreate(sourceDir) }
+        .toTypedArray()
+)
 
 val info: Map<String, Serializable?> = mapOf(
     "doWork_Name" to "do_work",
@@ -56,9 +60,9 @@ dependencies {
     spigotLint(spigotPrefix + spigotVersions.first().component1())
     spigotLint(versionSpecificSources.values.first().allSource.sourceDirectories)
     versionSpecificSources
+        .entries
         .reversed()
-        .map { (k, v) -> v to k }
-        .toMap()
+        .associate { (k, v) -> v to k }
         .forEach { (sourceSet, spigotVersion) ->
             arrayOf(
                 tasks.findByName(sourceSet.sourcesJarTaskName),
@@ -156,9 +160,9 @@ Unit.run {
                     val buildToolsInfo = groovy.json.JsonSlurper().parseText(
                         URI("https://hub.spigotmc.org/versions/$majorMinorVersion.json").toURL().readText()
                     ) as Map<*, *>
-                    val javaVersion =
-                        ((buildToolsInfo["javaVersions"] as List<*>?)?.get(0) as? Int)?.let(JavaVersion::forClassVersion)
-                            ?: JavaVersion.VERSION_1_8
+                    val javaVersion = ((buildToolsInfo["javaVersions"] as List<*>?)?.get(0) as? Int)
+                        ?.let(JavaVersion::forClassVersion)
+                        ?: JavaVersion.VERSION_1_8
 
                     isFork = true
                     release.set(javaVersion.majorVersion.toInt())
