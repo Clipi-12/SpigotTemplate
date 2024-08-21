@@ -1,10 +1,12 @@
-import com.github.gmazzo.buildconfig.BuildConfigTask
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import java.io.Serializable
+import java.net.URI
 
 plugins {
     id("java")
     id("eclipse")
     id("idea")
+    id("com.gradleup.shadow") version "8.3.0"
     id("com.github.gmazzo.buildconfig") version "5.3.5"
 }
 
@@ -12,30 +14,13 @@ group = "me.dev_name"
 version = "0.0.1"
 
 val mainPackage = "${group}.${name.split(Regex("\\s+")).joinToString("_").lowercase()}"
-project.extra["mainPackage"] = mainPackage
-project.extra["bukkitProjectName"] = name.split(Regex("\\s+")).joinToString("")
 
-repositories {
-    mavenCentral()
-    maven(url = "https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
-}
-
-var spigotConfLint = objects.sourceDirectorySet("spigotConfLint", "Spigot Configuration Lint")
-val spigotDepLint: Configuration by configurations.creating
-configurations.compileOnly.get().extendsFrom(spigotDepLint)
-val spigotPrefix = "org.spigotmc:spigot-api:"
-val spigotVersions = (project.property("spigotVersions") as String)
-    .trim().split(Regex(""",\s*""")).toSortedSet()
-    .map { spigotVersion -> spigotVersion to spigotVersion.substring(0, 4) }
-dependencies {
-    // Lint with the oldest version to avoid unavailable APIs
-    spigotDepLint(spigotPrefix + spigotVersions.map { (spigotVersion, _) -> spigotVersion }.first())
-
-    compileOnly("org.jetbrains:annotations:24.0.0")
-    compileOnly("org.projectlombok:lombok:1.18.30")
-    annotationProcessor("org.projectlombok:lombok:1.18.30")
-}
-
+val versionSpecificSources = sortedMapOf(
+    "1.18.2-R0.1-SNAPSHOT" to "pre_1_19",
+    "1.19.3-R0.1-SNAPSHOT" to "1_19",
+    "1.19.4-R0.1-SNAPSHOT" to "1_19",
+    "1.20.1-R0.1-SNAPSHOT" to "post_1_19"
+).mapValues { (_, sourceDir) -> sourceSets.maybeCreate(sourceDir) }.toSortedMap()
 
 val info: Map<String, Serializable?> = mapOf(
     "doWork_Name" to "do_work",
@@ -54,28 +39,78 @@ val configKeys: Map<String, Serializable?> = arrayOf(
 }
 val props = info + configKeys
 
-val targetJavaVersion = 17
-java {
-    val javaVersion = JavaVersion.toVersion(targetJavaVersion)
-    sourceCompatibility = javaVersion
-    targetCompatibility = javaVersion
-    if (JavaVersion.current() < javaVersion)
-        toolchain.languageVersion.set(JavaLanguageVersion.of(targetJavaVersion))
+repositories {
+    mavenCentral()
+    maven(url = "https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
 }
 
-tasks.withType<JavaCompile>().configureEach {
-    if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible)
-        options.release.set(targetJavaVersion)
+val spigotLint: Configuration by configurations.creating
+configurations.compileClasspath.get().extendsFrom(spigotLint)
+val spigotPrefix = "org.spigotmc:spigot-api:"
+val spigotVersions = versionSpecificSources.keys.map { spigotVersion ->
+    val (majorMinorVersion, majorVersion) = Regex("""((\d+\.\d+)(?:\.\d+)?)-.+""").find(spigotVersion)!!.destructured
+    Triple(spigotVersion, majorVersion, majorMinorVersion)
+}
+dependencies {
+    // Lint with the oldest version to avoid unavailable APIs
+    spigotLint(spigotPrefix + spigotVersions.first().component1())
+    spigotLint(versionSpecificSources.values.first().allSource.sourceDirectories)
+    versionSpecificSources
+        .reversed()
+        .map { (k, v) -> v to k }
+        .toMap()
+        .forEach { (sourceSet, spigotVersion) ->
+            arrayOf(
+                tasks.findByName(sourceSet.sourcesJarTaskName),
+                tasks.findByName(sourceSet.classesTaskName),
+                tasks.findByName(sourceSet.compileJavaTaskName),
+                tasks.findByName(sourceSet.jarTaskName),
+                tasks.findByName(sourceSet.javadocTaskName),
+                tasks.findByName(sourceSet.javadocJarTaskName),
+                tasks.findByName(sourceSet.processResourcesTaskName),
+            ).filterNotNull().forEach {
+                it.dependsOn.clear()
+                it.enabled = false
+            }
 
-    options.encoding = "UTF-8"
+            val versionSpecificLint = configurations[sourceSet.compileOnlyConfigurationName]
+            versionSpecificLint(configurations.compileClasspath.get() - spigotLint)
+            versionSpecificLint(spigotPrefix + spigotVersion)
+            versionSpecificLint(sourceSets.main.get().allSource.sourceDirectories)
+        }
+
+    // shadow("org.mongodb:mongodb-driver-sync:5.1.3") // Your dependencies
+
+    compileOnly("org.jetbrains:annotations:24.0.0")
+    compileOnly("org.projectlombok:lombok:1.18.30")
+    annotationProcessor("org.projectlombok:lombok:1.18.30")
+}
+
+
+java {
+    toolchain.languageVersion.set(
+        JavaLanguageVersion.of(maxOf(JavaVersion.VERSION_22, JavaVersion.current()).majorVersion.toInt())
+    )
 }
 
 tasks.withType<Javadoc> {
     options.encoding = "UTF-8"
 }
 
+buildConfig {
+    packageName("${mainPackage}.config")
+    className("ConfigKeys")
+    useJavaOutput()
 
-inline fun <reified T : Task> spigotVersionTask(
+    props.forEach { (key, value) ->
+        buildConfigField(key) {
+            type(value?.javaClass ?: Object::class.java)
+            value(value)
+        }
+    }
+}
+
+inline fun <reified T : Task> spigotTask(
     spigotVersion: String,
     name: String,
     config: Action<in T> = Action {}
@@ -86,82 +121,86 @@ inline fun <reified T : Task> spigotVersionTask(
     }
 }
 
-tasks.withType<BuildConfigTask>().forEach {
-    it.enabled = false
-}
-buildConfig.sourceSets.clear()
 tasks.build.get().dependsOn.clear()
-spigotVersions.forEachIndexed { index, (spigotVersion, apiVersion) ->
-    val spigotDep = configurations.create("spigot_dep_$spigotVersion") {
-        this.dependencies.add(project.dependencies.create(spigotPrefix + spigotVersion))
-    }
+Unit.run {
+    val extraProps = project.properties - "properties" + props + mapOf(
+        "mainPackage" to mainPackage,
+        "bukkitProjectName" to name.split(Regex("\\s+")).joinToString("")
+    )
+    spigotVersions.forEach { (spigotVersion, majorVersion, majorMinorVersion) ->
+        val spigotDep = configurations.create("spigot_dep_$spigotVersion") {
+            this.dependencies.add(project.dependencies.create(spigotPrefix + spigotVersion))
+        }
 
-    val assemble = spigotVersionTask<Task>(spigotVersion, "assemble")
-    val check = spigotVersionTask<Task>(spigotVersion, "check")
+        val assemble = spigotTask<Task>(spigotVersion, "assemble")
+        val check = spigotTask<Task>(spigotVersion, "check")
 
-    lateinit var jarContentsTmp: File
-    lateinit var generateBuildConfig: BuildConfigTask
-    lateinit var compileJava: JavaCompile
-    lateinit var processResources: Copy
-    assemble.dependsOn(spigotVersionTask<Zip>(spigotVersion, "jar") {
-        jarContentsTmp = temporaryDir
-        from(jarContentsTmp)
-        archiveExtension.set(Jar.DEFAULT_EXTENSION)
-        metadataCharset = "UTF-8"
-        archiveClassifier.set(spigotVersion)
+        lateinit var jarContentsTmp: File
+        lateinit var compileJava: JavaCompile
+        lateinit var processResources: Copy
+        assemble.dependsOn(spigotTask<Zip>(spigotVersion, "jar") {
+            jarContentsTmp = temporaryDir
+            from(jarContentsTmp)
+            archiveExtension.set(Jar.DEFAULT_EXTENSION)
+            metadataCharset = "UTF-8"
+            archiveClassifier.set(spigotVersion)
 
-        generateBuildConfig = buildConfig.sourceSets.create(spigotVersion) {
-            packageName("${mainPackage}.config")
-            className("ConfigKeys")
-            useJavaOutput()
+            compileJava = spigotTask<JavaCompile>(spigotVersion, "compileJava") {
+                source(sourceSets.main.get().java, versionSpecificSources[spigotVersion]!!.java)
+                destinationDirectory.set(jarContentsTmp)
 
-            props.forEach { (key, value) ->
-                buildConfigField(key) {
-                    type(value?.javaClass ?: Object::class.java)
-                    value(value)
+                classpath = configurations.compileClasspath.get() - spigotLint + spigotDep
+                javaCompiler.set(javaToolchains.compilerFor(java.toolchain))
+
+                options.run {
+                    val buildToolsInfo = groovy.json.JsonSlurper().parseText(
+                        URI("https://hub.spigotmc.org/versions/$majorMinorVersion.json").toURL().readText()
+                    ) as Map<*, *>
+                    val javaVersion =
+                        ((buildToolsInfo["javaVersions"] as List<*>?)?.get(0) as? Int)?.let(JavaVersion::forClassVersion)
+                            ?: JavaVersion.VERSION_1_8
+
+                    isFork = true
+                    release.set(javaVersion.majorVersion.toInt())
+
+                    compilerArgs.add("-Xlint:all,-processing")
+                    if (project.properties["javacWError"].toString().toBoolean()) compilerArgs.add("-Werror")
+                    encoding = "UTF-8"
+                    annotationProcessorPath = configurations.annotationProcessor.get()
                 }
             }
 
-            forClass("CompilationInfo") {
-                buildConfigField("apiVersion", apiVersion)
+            processResources = spigotTask<Copy>(spigotVersion, "processResources") {
+                from(sourceSets.main.get().resources, versionSpecificSources[spigotVersion]!!.resources)
+                into(jarContentsTmp)
+
+                filteringCharset = "UTF-8"
+                expand(
+                    extraProps + mapOf(
+                        "spigotVersion" to spigotVersion,
+                        "apiVersion" to majorVersion,
+                        "fullVersion" to majorMinorVersion,
+                    )
+                )
             }
-        }.generateTask.get().also {
-            it.group = "z_$spigotVersion"
-            if (index == 0) {
-                spigotConfLint.srcDir(it)
-                sourceSets.main.configure { java.srcDir(spigotConfLint) }
-            }
-        }
+            dependsOn(compileJava, processResources)
+        })
 
-        compileJava = spigotVersionTask<JavaCompile>(spigotVersion, "compileJava") {
-            source(sourceSets.main.map { it.java - spigotConfLint }, generateBuildConfig)
-            destinationDirectory.set(jarContentsTmp)
+        assemble.dependsOn(spigotTask<ShadowJar>(spigotVersion, "shadowJar") {
+            dependsOn(compileJava, processResources)
+            from(jarContentsTmp)
+            destinationDirectory.set(layout.buildDirectory.dir("shadowJars"))
 
-            options.encoding = "UTF-8"
-            classpath = configurations.compileClasspath.get() - spigotDepLint + spigotDep
-            options.annotationProcessorPath = configurations.annotationProcessor.get()
+            isEnableRelocation = true
+            relocationPrefix = "${mainPackage}.shaded"
+            configurations += project.configurations.shadow.get()
+            archiveClassifier.set(spigotVersion)
+        })
 
-            dependsOn(generateBuildConfig)
-        }
-
-        processResources = spigotVersionTask<Copy>(spigotVersion, "processResources") {
-            from(sourceSets.main.map { it.resources })
-            into(jarContentsTmp)
-
-            val extraProps = project.properties - "properties" + project.extra.properties + props + mapOf(
-                "spigotVersion" to spigotVersion,
-                "apiVersion" to apiVersion,
-            )
-            filteringCharset = "UTF-8"
-            expand(extraProps)
-        }
-
-        dependsOn(compileJava, processResources)
-    })
-
-    tasks.build.get().finalizedBy(spigotVersionTask<Task>(spigotVersion, "build") {
-        dependsOn(assemble, check)
-    })
+        tasks.build.get().finalizedBy(spigotTask(spigotVersion, "build") {
+            dependsOn(assemble, check)
+        })
+    }
 }
 
 eclipse.classpath {
