@@ -75,6 +75,7 @@ dependencies {
             ).filterNotNull().forEach {
                 it.dependsOn.clear()
                 it.enabled = false
+                it.group = "disabled"
             }
 
             val versionSpecificLint = configurations[sourceSet.compileOnlyConfigurationName]
@@ -117,7 +118,7 @@ buildConfig {
 inline fun <reified T : Task> spigotTask(
     spigotVersion: String,
     name: String,
-    config: Action<in T> = Action {}
+    config: Action<in T> = Action {},
 ): T {
     return tasks.create<T>("${name}_$spigotVersion") {
         group = "z_$spigotVersion"
@@ -125,7 +126,8 @@ inline fun <reified T : Task> spigotTask(
     }
 }
 
-tasks.build.get().dependsOn.clear()
+tasks.assemble.get().dependsOn.clear()
+tasks.check.get().dependsOn.clear()
 Unit.run {
     val extraProps = project.properties - "properties" + props + mapOf(
         "mainPackage" to mainPackage,
@@ -138,6 +140,11 @@ Unit.run {
 
         val assemble = spigotTask<Task>(spigotVersion, "assemble")
         val check = spigotTask<Task>(spigotVersion, "check")
+        tasks.assemble.get().dependsOn(assemble)
+        tasks.check.get().dependsOn(check)
+        spigotTask<Task>(spigotVersion, "build") {
+            dependsOn(assemble, check)
+        }
 
         lateinit var jarContentsTmp: File
         lateinit var compileJava: JavaCompile
@@ -199,10 +206,6 @@ Unit.run {
             relocationPrefix = "${mainPackage}.shaded"
             configurations += project.configurations.shadow.get()
             archiveClassifier.set(spigotVersion)
-        })
-
-        tasks.build.get().finalizedBy(spigotTask(spigotVersion, "build") {
-            dependsOn(assemble, check)
         })
     }
 }
