@@ -86,9 +86,9 @@ dependencies {
 
     // shadow("org.mongodb:mongodb-driver-sync:5.1.3") // Your dependencies
 
-    compileOnly("org.jetbrains:annotations:24.0.0")
-    compileOnly("org.projectlombok:lombok:1.18.30")
-    annotationProcessor("org.projectlombok:lombok:1.18.30")
+    compileOnly("org.jetbrains:annotations:24.1.0")
+    compileOnly("org.projectlombok:lombok:1.18.34")
+    annotationProcessor("org.projectlombok:lombok:1.18.34")
 }
 
 
