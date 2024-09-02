@@ -3,9 +3,9 @@ import java.io.Serializable
 import java.net.URI
 
 plugins {
-    id("java")
-    id("eclipse")
-    id("idea")
+    java
+    eclipse
+    idea
     id("com.gradleup.shadow") version "8.3.0"
     id("com.github.gmazzo.buildconfig") version "5.3.5"
 }
@@ -84,7 +84,7 @@ dependencies {
             versionSpecificLint(sourceSets.main.get().allSource.sourceDirectories)
         }
 
-    // shadow("org.mongodb:mongodb-driver-sync:5.1.3") // Your dependencies
+    // implementation("org.mongodb:mongodb-driver-sync:5.1.3") // Your dependencies
 
     compileOnly("org.jetbrains:annotations:24.1.0")
     compileOnly("org.projectlombok:lombok:1.18.34")
@@ -93,9 +93,8 @@ dependencies {
 
 
 java {
-    toolchain.languageVersion.set(
+    toolchain.languageVersion =
         JavaLanguageVersion.of(maxOf(JavaVersion.VERSION_22, JavaVersion.current()).majorVersion.toInt())
-    )
 }
 
 tasks.withType<Javadoc> {
@@ -152,16 +151,16 @@ Unit.run {
         assemble.dependsOn(spigotTask<Zip>(spigotVersion, "jar") {
             jarContentsTmp = temporaryDir
             from(jarContentsTmp)
-            archiveExtension.set(Jar.DEFAULT_EXTENSION)
+            archiveExtension = Jar.DEFAULT_EXTENSION
             metadataCharset = "UTF-8"
-            archiveClassifier.set(spigotVersion)
+            archiveClassifier = spigotVersion
 
             compileJava = spigotTask<JavaCompile>(spigotVersion, "compileJava") {
                 source(sourceSets.main.get().java, versionSpecificSources[spigotVersion]!!.java)
-                destinationDirectory.set(jarContentsTmp)
+                destinationDirectory = jarContentsTmp
 
                 classpath = configurations.compileClasspath.get() - spigotLint + spigotDep
-                javaCompiler.set(javaToolchains.compilerFor(java.toolchain))
+                javaCompiler = javaToolchains.compilerFor(java.toolchain)
 
                 options.run {
                     val buildToolsInfo = groovy.json.JsonSlurper().parseText(
@@ -172,10 +171,11 @@ Unit.run {
                         ?: JavaVersion.VERSION_1_8
 
                     isFork = true
-                    release.set(javaVersion.majorVersion.toInt())
+                    release = javaVersion.majorVersion.toInt()
 
                     compilerArgs.add("-Xlint:all,-processing")
-                    if (project.properties["javacWError"].toString().toBoolean()) compilerArgs.add("-Werror")
+                    if (project.findProperty("javac_error_on_warning").toString().toBoolean())
+                        compilerArgs.add("-Werror")
                     encoding = "UTF-8"
                     annotationProcessorPath = configurations.annotationProcessor.get()
                 }
@@ -194,19 +194,34 @@ Unit.run {
                     )
                 )
             }
+
             dependsOn(compileJava, processResources)
         })
 
-        assemble.dependsOn(spigotTask<ShadowJar>(spigotVersion, "shadowJar") {
+        val shadowJar = spigotTask<ShadowJar>(spigotVersion, "shadowJar") {
             dependsOn(compileJava, processResources)
             from(jarContentsTmp)
-            destinationDirectory.set(layout.buildDirectory.dir("shadowJars"))
+            destinationDirectory = layout.buildDirectory.dir("shadowJars")
 
+            doFirst {
+                minimize()
+            }
+            // Commented out until https://github.com/GradleUp/shadow/issues/955 is resolved
+            // duplicatesStrategy = DuplicatesStrategy.FAIL
             isEnableRelocation = true
             relocationPrefix = "${mainPackage}.shaded"
-            configurations += project.configurations.shadow.get()
-            archiveClassifier.set(spigotVersion)
-        })
+            configurations += project.configurations.runtimeClasspath.get()
+            archiveClassifier = spigotVersion
+        }
+        assemble.dependsOn(shadowJar)
+
+        project.findProperty(majorMinorVersion + "_copy_dest")?.let {
+            assemble.dependsOn(spigotTask<Copy>(spigotVersion, "copyResult") {
+                dependsOn(shadowJar)
+                from(shadowJar)
+                destinationDir = file(it)
+            })
+        }
     }
 }
 
