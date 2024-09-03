@@ -91,10 +91,8 @@ dependencies {
     annotationProcessor("org.projectlombok:lombok:1.18.34")
 }
 
-
-java {
-    toolchain.languageVersion =
-        JavaLanguageVersion.of(maxOf(JavaVersion.VERSION_22, JavaVersion.current()).majorVersion.toInt())
+val compiler = javaToolchains.compilerFor {
+    languageVersion = JavaLanguageVersion.of(maxOf(JavaVersion.VERSION_22, JavaVersion.current()).majorVersion.toInt())
 }
 
 tasks.withType<Javadoc> {
@@ -132,7 +130,7 @@ Unit.run {
         "mainPackage" to mainPackage,
         "bukkitProjectName" to name.split(Regex("\\s+")).joinToString("")
     )
-    spigotVersions.forEach { (spigotVersion, majorVersion, majorMinorVersion) ->
+    spigotVersions.forEachIndexed { index, (spigotVersion, majorVersion, majorMinorVersion) ->
         val spigotDep = configurations.create("spigot_dep_$spigotVersion") {
             this.dependencies.add(project.dependencies.create(spigotPrefix + spigotVersion))
         }
@@ -160,7 +158,7 @@ Unit.run {
                 destinationDirectory = jarContentsTmp
 
                 classpath = configurations.compileClasspath.get() - spigotLint + spigotDep
-                javaCompiler = javaToolchains.compilerFor(java.toolchain)
+                javaCompiler = compiler
 
                 options.run {
                     val buildToolsInfo = groovy.json.JsonSlurper().parseText(
@@ -172,8 +170,10 @@ Unit.run {
 
                     isFork = true
                     release = javaVersion.majorVersion.toInt()
+                    if (index == 0)
+                        java.toolchain.languageVersion = JavaLanguageVersion.of(release.get())
 
-                    compilerArgs.add("-Xlint:all,-processing")
+                    compilerArgs.add("-Xlint:all,-processing,-options")
                     if (project.findProperty("javac_error_on_warning").toString().toBoolean())
                         compilerArgs.add("-Werror")
                     encoding = "UTF-8"
