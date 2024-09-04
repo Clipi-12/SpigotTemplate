@@ -17,6 +17,7 @@ val mainPackage = "${group}.${name.split(Regex("\\s+")).joinToString("_").lowerc
 
 val versionSpecificSources = sortedMapOf(
     *arrayOf(
+        "1.17.1-R0.1-SNAPSHOT" to "pre_1_19",
         "1.18.2-R0.1-SNAPSHOT" to "pre_1_19",
         "1.19.3-R0.1-SNAPSHOT" to "1_19",
         "1.19.4-R0.1-SNAPSHOT" to "1_19",
@@ -56,33 +57,57 @@ val spigotVersions = versionSpecificSources.keys.map { spigotVersion ->
     Triple(spigotVersion, majorVersion, majorMinorVersion)
 }
 dependencies {
-    // Lint with the oldest version to avoid unavailable APIs
-    spigotLint(spigotPrefix + spigotVersions.first().component1())
-    spigotLint(versionSpecificSources.values.first().allSource.sourceDirectories)
     versionSpecificSources
         .entries
-        .reversed()
-        .associate { (k, v) -> v to k }
-        .forEach { (sourceSet, spigotVersion) ->
-            arrayOf(
-                tasks.findByName(sourceSet.sourcesJarTaskName),
-                tasks.findByName(sourceSet.classesTaskName),
-                tasks.findByName(sourceSet.compileJavaTaskName),
-                tasks.findByName(sourceSet.jarTaskName),
-                tasks.findByName(sourceSet.javadocTaskName),
-                tasks.findByName(sourceSet.javadocJarTaskName),
-                tasks.findByName(sourceSet.processResourcesTaskName),
-            ).filterNotNull().forEach {
-                it.dependsOn.clear()
-                it.enabled = false
-                it.group = "disabled"
+        .groupBy({ it.value }, { it.key })
+        .forEach { (sourceSet, spigotVersions) ->
+            fun disableSourceSetTasks(toBeDisabled: SourceSet) {
+                arrayOf(
+                    tasks.findByName(toBeDisabled.sourcesJarTaskName),
+                    tasks.findByName(toBeDisabled.classesTaskName),
+                    tasks.findByName(toBeDisabled.compileJavaTaskName),
+                    tasks.findByName(toBeDisabled.jarTaskName),
+                    tasks.findByName(toBeDisabled.javadocTaskName),
+                    tasks.findByName(toBeDisabled.javadocJarTaskName),
+                    tasks.findByName(toBeDisabled.processResourcesTaskName),
+                ).filterNotNull().forEach {
+                    it.dependsOn.clear()
+                    it.enabled = false
+                    it.group = "disabled"
+                }
             }
 
-            val versionSpecificLint = configurations[sourceSet.compileOnlyConfigurationName]
-            versionSpecificLint(configurations.compileClasspath.get() - spigotLint)
-            versionSpecificLint(spigotPrefix + spigotVersion)
-            versionSpecificLint(sourceSets.main.get().allSource.sourceDirectories)
+            val main = sourceSets.main.get().allSource.sourceDirectories
+            val compileClassPath = configurations.compileClasspath.get() - spigotLint
+
+            disableSourceSetTasks(sourceSet)
+
+            val sourceSetSpecificLint = configurations[sourceSet.compileOnlyConfigurationName]
+            sourceSetSpecificLint(compileClassPath)
+            sourceSetSpecificLint(spigotPrefix + spigotVersions.first())
+            sourceSetSpecificLint(main)
+
+            spigotVersions.forEachIndexed { index, spigotVersion ->
+                val spigotSourceSet = sourceSets.create(spigotVersion)
+                disableSourceSetTasks(spigotSourceSet)
+
+                val spigotSpecificLint = configurations[spigotSourceSet.compileOnlyConfigurationName]
+                spigotSpecificLint(compileClassPath)
+                spigotSpecificLint(spigotPrefix + spigotVersion)
+                spigotSpecificLint(main)
+
+                spigotSpecificLint(sourceSet.allSource.sourceDirectories)
+                if (index == 0) sourceSetSpecificLint(spigotSourceSet.allSource.sourceDirectories)
+            }
         }
+    // Lint with the oldest version to avoid unavailable APIs
+    spigotLint(spigotPrefix + spigotVersions.first().component1())
+    spigotLint(
+        overwrittenSourceSet(
+            *versionSpecificSources.values.reversed().map { it.allSource }.toTypedArray(),
+            *versionSpecificSources.keys.reversed().map { sourceSets.getByName(it).allSource }.toTypedArray()
+        )
+    )
 
     // implementation("org.mongodb:mongodb-driver-sync:5.1.3") // Your dependencies
 
@@ -123,6 +148,24 @@ inline fun <reified T : Task> spigotTask(
     }
 }
 
+fun overwrittenSourceSet(vararg orderedSourceSets: SourceDirectorySet): FileCollection {
+    fun filterNotIn(sourceSet: SourceDirectorySet, exclude: List<SourceDirectorySet>) = sourceSet.filterNot {
+        sourceSet.sourceDirectories.any { sourceSetDir ->
+            it.toPath().startsWith(sourceSetDir.toPath()) && it.relativeTo(sourceSetDir).let {
+                exclude.any { excluded ->
+                    excluded.sourceDirectories.any { excludedDir ->
+                        excludedDir.resolve(it).exists()
+                    }
+                }
+            }
+        }
+    }
+    return files(orderedSourceSets.flatMapIndexed { i, sourceSet ->
+        filterNotIn(sourceSet, orderedSourceSets.drop(i + 1))
+    })
+}
+
+
 tasks.assemble.get().dependsOn.clear()
 tasks.check.get().dependsOn.clear()
 Unit.run {
@@ -154,7 +197,13 @@ Unit.run {
             archiveClassifier = spigotVersion
 
             compileJava = spigotTask<JavaCompile>(spigotVersion, "compileJava") {
-                source(sourceSets.main.get().java, versionSpecificSources[spigotVersion]!!.java)
+                source(
+                    overwrittenSourceSet(
+                        sourceSets.main.get().java,
+                        versionSpecificSources[spigotVersion]!!.java,
+                        sourceSets.getByName(spigotVersion).java
+                    )
+                )
                 destinationDirectory = jarContentsTmp
 
                 classpath = configurations.compileClasspath.get() - spigotLint + spigotDep
@@ -182,7 +231,13 @@ Unit.run {
             }
 
             processResources = spigotTask<Copy>(spigotVersion, "processResources") {
-                from(sourceSets.main.get().resources, versionSpecificSources[spigotVersion]!!.resources)
+                from(
+                    overwrittenSourceSet(
+                        sourceSets.main.get().resources,
+                        versionSpecificSources[spigotVersion]!!.resources,
+                        sourceSets.getByName(spigotVersion).resources
+                    )
+                )
                 into(jarContentsTmp)
 
                 filteringCharset = "UTF-8"

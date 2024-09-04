@@ -1,0 +1,3 @@
+work:
+  ${workingHours_Key}: 5
+  ${isWorkingHardEnough_Key}: false
