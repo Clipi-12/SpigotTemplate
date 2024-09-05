@@ -120,9 +120,9 @@ dependencies {
     annotationProcessor("org.projectlombok:lombok:1.18.34")
 }
 
-val compiler = javaToolchains.compilerFor {
+javaToolchains.compilerFor {
     languageVersion = JavaLanguageVersion.of(maxOf(JavaVersion.VERSION_22, JavaVersion.current()).majorVersion.toInt())
-}
+}.let { compiler -> tasks.withType<JavaCompile> { javaCompiler = compiler } }
 
 tasks.withType<Javadoc> {
     options.encoding = "UTF-8"
@@ -226,7 +226,6 @@ Unit.run {
                 destinationDirectory = jarContentsTmp
 
                 classpath = configurations.compileClasspath.get() - spigotLint + spigotDep
-                javaCompiler = compiler
 
                 options.run {
                     val buildToolsInfo = groovy.json.JsonSlurper().parseText(
