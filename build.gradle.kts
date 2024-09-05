@@ -1,4 +1,5 @@
 import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import java.io.IOException
 import java.io.Serializable
 import java.net.URI
 
@@ -77,7 +78,6 @@ dependencies {
                 }
             }
 
-            val main = sourceSets.main.get().allSource.sourceDirectories
             val compileClassPath = configurations.compileClasspath.get() - spigotLint
 
             disableSourceSetTasks(sourceSet)
@@ -85,29 +85,33 @@ dependencies {
             val sourceSetSpecificLint = configurations[sourceSet.compileOnlyConfigurationName]
             sourceSetSpecificLint(compileClassPath)
             sourceSetSpecificLint(spigotPrefix + spigotVersions.first())
-            sourceSetSpecificLint(main)
 
             spigotVersions.forEachIndexed { index, spigotVersion ->
                 val spigotSourceSet = sourceSets.create(spigotVersion)
+                spigotSourceSet.java.srcDir(spigotSourceSet.java.sourceDirectories.map {
+                    it.parentFile.resolve("${it.name}-forward-compatible")
+                })
                 disableSourceSetTasks(spigotSourceSet)
 
                 val spigotSpecificLint = configurations[spigotSourceSet.compileOnlyConfigurationName]
                 spigotSpecificLint(compileClassPath)
                 spigotSpecificLint(spigotPrefix + spigotVersion)
-                spigotSpecificLint(main)
+                spigotSpecificLint(
+                    classpathForVersion(versionSpecificSources.keys.indexOf(spigotVersion), null) - sourceSet.allSource
+                )
 
                 spigotSpecificLint(sourceSet.allSource.sourceDirectories)
                 if (index == 0) sourceSetSpecificLint(spigotSourceSet.allSource.sourceDirectories)
             }
+
+            sourceSetSpecificLint(
+                classpathForVersion(versionSpecificSources.keys.indexOf(spigotVersions.first()), null)
+                    - sourceSet.allSource
+            )
         }
     // Lint with the oldest version to avoid unavailable APIs
-    spigotLint(spigotPrefix + spigotVersions.first().component1())
-    spigotLint(
-        overwrittenSourceSet(
-            *versionSpecificSources.values.reversed().map { it.allSource }.toTypedArray(),
-            *versionSpecificSources.keys.reversed().map { sourceSets.getByName(it).allSource }.toTypedArray()
-        )
-    )
+    spigotLint(spigotPrefix + versionSpecificSources.keys.first())
+    spigotLint(classpathForVersion(0, null) - sourceSets.main.get().allSource)
 
     // implementation("org.mongodb:mongodb-driver-sync:5.1.3") // Your dependencies
 
@@ -148,21 +152,42 @@ inline fun <reified T : Task> spigotTask(
     }
 }
 
-fun overwrittenSourceSet(vararg orderedSourceSets: SourceDirectorySet): FileCollection {
-    fun filterNotIn(sourceSet: SourceDirectorySet, exclude: List<SourceDirectorySet>) = sourceSet.filterNot {
-        sourceSet.sourceDirectories.any { sourceSetDir ->
-            it.toPath().startsWith(sourceSetDir.toPath()) && it.relativeTo(sourceSetDir).let {
-                exclude.any { excluded ->
-                    excluded.sourceDirectories.any { excludedDir ->
-                        excludedDir.resolve(it).exists()
+fun classpathForVersion(
+    index: Int,
+    configure: ((SourceSet) -> SourceDirectorySet)?,
+): FileCollection {
+    fun addToMap(map: MutableMap<File, File>, sourceSetDirs: Sequence<File>) {
+        val temp = mutableMapOf<File, File>()
+        sourceSetDirs.forEach { sourceSetDir ->
+            sourceSetDir.walk()
+                .filter { it.isFile }
+                .map { it.relativeTo(sourceSetDir) }
+                .forEach {
+                    temp.putIfAbsent(it, sourceSetDir)?.let { previousDir ->
+                        throw IOException("$it is contained in both $previousDir and $sourceSetDir")
                     }
                 }
-            }
         }
+        temp.forEach(map::putIfAbsent)
     }
-    return files(orderedSourceSets.flatMapIndexed { i, sourceSet ->
-        filterNotIn(sourceSet, orderedSourceSets.drop(i + 1))
-    })
+
+    fun forwardCompatible(sourceSet: SourceDirectorySet) =
+        sourceSet.sourceDirectories.asSequence().filter { it.name.endsWith("-forward-compatible") }
+
+    val result = mutableMapOf<File, File>()
+    val configurateOrAll = configure ?: { sSet -> sSet.allSource }
+    versionSpecificSources.entries.elementAt(index).run {
+        addToMap(result, configurateOrAll(sourceSets.getByName(key)).sourceDirectories.asSequence())
+        addToMap(result, configurateOrAll(value).sourceDirectories.asSequence())
+    }
+    versionSpecificSources.keys
+        .take(index)
+        .asReversed().asSequence()
+        .map { sourceSets.getByName(it) }
+        .forEach { addToMap(result, forwardCompatible(configurateOrAll(it))) }
+    addToMap(result, configurateOrAll(sourceSets.main.get()).sourceDirectories.asSequence())
+    return if (configure == null) files(result.values.distinct()) else files(result.entries.map { it.value.resolve(it.key) }
+        .toList())
 }
 
 
@@ -197,13 +222,7 @@ Unit.run {
             archiveClassifier = spigotVersion
 
             compileJava = spigotTask<JavaCompile>(spigotVersion, "compileJava") {
-                source(
-                    overwrittenSourceSet(
-                        sourceSets.main.get().java,
-                        versionSpecificSources[spigotVersion]!!.java,
-                        sourceSets.getByName(spigotVersion).java
-                    )
-                )
+                source(classpathForVersion(index) { it.java })
                 destinationDirectory = jarContentsTmp
 
                 classpath = configurations.compileClasspath.get() - spigotLint + spigotDep
@@ -231,13 +250,7 @@ Unit.run {
             }
 
             processResources = spigotTask<Copy>(spigotVersion, "processResources") {
-                from(
-                    overwrittenSourceSet(
-                        sourceSets.main.get().resources,
-                        versionSpecificSources[spigotVersion]!!.resources,
-                        sourceSets.getByName(spigotVersion).resources
-                    )
-                )
+                from(classpathForVersion(index) { it.resources })
                 into(jarContentsTmp)
 
                 filteringCharset = "UTF-8"
